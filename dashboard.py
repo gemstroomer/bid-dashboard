@@ -82,17 +82,22 @@ df_raw = load_data(f_ab, f_bo, f_functie, f_base)
 # ─────────────────────────────────────────────
 # PROCESSING
 # ─────────────────────────────────────────────
-@st.cache_data(show_spinner="Processing…")
-def process(df_raw):
-    df = df_raw.copy()
-
-    # status_count
-    df["status_count"] = df["Status"].str.extract(r"\((\d+)\)")
-    df.loc[df["Status"] == "Granted",     "status_count"] = df.loc[df["Status"] == "Granted",     "Maxroster Times Granted"]
-    df.loc[df["Status"] == "Not Granted", "status_count"] = 0
+# status_count
+    df["Maxroster Times Granted"] = pd.to_numeric(df["Maxroster Times Granted"], errors="coerce")
+    
+    sc = df["Status"].str.extract(r"\((\d+)\)")[0].astype(float)
+    mrr = pd.to_numeric(df["Maxroster Times Granted"], errors="coerce")
+    
+    df["status_count"] = sc
+    df.loc[df["Status"] == "Granted",     "status_count"] = mrr[df["Status"] == "Granted"].values
+    df.loc[df["Status"] == "Not Granted", "status_count"] = 0.0
     df.loc[
         (df["Description"].str.contains("Avoid Layover", na=False)) &
         (df["Status"].str.contains("Granted", na=False)),
+        "status_count"
+    ] = mrr[df["Description"].str.contains("Avoid Layover", na=False) &
+            df["Status"].str.contains("Granted", na=False)].values
+    df["status_count"] = pd.to_numeric(df["status_count"], errors="coerce")
         "status_count"
     ] = df["Maxroster Times Granted"]
     df["status_count"] = pd.to_numeric(df["status_count"], errors="coerce")
