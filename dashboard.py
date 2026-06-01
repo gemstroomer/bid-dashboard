@@ -1,46 +1,45 @@
-
 import streamlit as st
 import pandas as pd
 import numpy as np
 import re
 import plotly.express as px
 import plotly.graph_objects as go
- 
+
 st.set_page_config(page_title="Crew Bid Analysis", page_icon="✈️", layout="wide")
 st.title("✈️ Crew Bid Analysis Dashboard")
 st.caption("Upload the Airbus and Boeing bid detail reports to run the analysis.")
- 
+
 # ─────────────────────────────────────────────
 # SIDEBAR
 # ─────────────────────────────────────────────
 with st.sidebar:
     st.header("⚙️ Settings")
- 
+
     st.subheader("1. Upload files")
     f_ab = st.file_uploader("Airbus bid report (.xlsx)", type="xlsx", key="ab")
     f_bo = st.file_uploader("Boeing bid report (.xlsx)", type="xlsx", key="bo")
- 
+
     st.subheader("2. Period (for days-off analysis)")
     period_start = st.date_input("Start", value=pd.Timestamp("2026-05-18"))
     period_end   = st.date_input("End",   value=pd.Timestamp("2026-06-21"))
- 
+
     st.subheader("3. Inactive / sick crew")
     sick_input = st.text_area(
         "Crew codes to exclude (comma-separated)",
         value="AJS, ARV, GOP, HAW, IHN, IVA, IVG, JJT, OGC, OOC, WOK, EUQ, PRO, NEL"
     )
     sick_crew = [c.strip() for c in sick_input.split(",") if c.strip()]
- 
+
     run = st.button("▶ Run analysis", type="primary", use_container_width=True)
- 
+
 if not run:
     st.info("Upload the Airbus and Boeing files in the sidebar and click **Run analysis**.")
     st.stop()
- 
+
 if not f_ab or not f_bo:
     st.error("Please upload both the Airbus and Boeing bid reports.")
     st.stop()
- 
+
 # ─────────────────────────────────────────────
 # LOAD
 # ─────────────────────────────────────────────
@@ -51,42 +50,42 @@ def load_data(f_ab, f_bo):
     df_ab["ac_type"] = "AB"
     df_bo["ac_type"] = "BO"
     return pd.concat([df_ab, df_bo], ignore_index=True)
- 
+
 df_raw = load_data(f_ab, f_bo)
- 
+
 # ─────────────────────────────────────────────
 # PROCESS
 # ─────────────────────────────────────────────
 @st.cache_data(show_spinner="Processing…")
 def process(df_raw):
     df = df_raw.copy()
- 
+
     # Convert key columns to string first to avoid arrow/type issues
     df["Status"] = df["Status"].astype(str)
     df["Description"] = df["Description"].astype(str)
     df["Maxroster Times Granted"] = pd.to_numeric(df["Maxroster Times Granted"], errors="coerce")
- 
+
     # Build status_count as a plain float Series from scratch
     sc = pd.to_numeric(
         df["Status"].str.extract(r"\((\d+)\)", expand=False),
         errors="coerce"
     )
- 
+
     mrr = df["Maxroster Times Granted"].copy()
- 
+
     # Where status is exactly "Granted" use Maxroster Times Granted
     mask_granted     = df["Status"].str.strip() == "Granted"
     mask_not_granted = df["Status"].str.strip() == "Not Granted"
     mask_avoid       = (df["Description"].str.contains("Avoid Layover", na=False) &
                         df["Status"].str.contains("Granted", na=False))
- 
+
     sc = sc.copy()
     sc[mask_granted]     = mrr[mask_granted]
     sc[mask_not_granted] = 0.0
     sc[mask_avoid]       = mrr[mask_avoid]
- 
+
     df["status_count"] = pd.to_numeric(sc, errors="coerce")
- 
+
     # Score from "points:" rows
     is_points = df["Description"].str.startswith("points:")
     bid_ratio = df["Bid ratio"].astype(str) if "Bid ratio" in df.columns else pd.Series("", index=df.index)
@@ -95,11 +94,11 @@ def process(df_raw):
         pd.to_numeric(bid_ratio.str.split("(").str[0].str.strip(), errors="coerce"),
         np.nan
     )
- 
+
     # Drop unnecessary columns
     df_clean = df.drop(columns=["Nr", "Points", "Limit", "Bid ratio"], errors="ignore")
     df_clean = df_clean[df_clean["Status"].notna() & (df_clean["Status"].str.strip() != "") & (df_clean["Status"] != "nan")]
- 
+
     # Categories
     def categorize_request(desc):
         desc = str(desc)
@@ -110,24 +109,24 @@ def process(df_raw):
                 "String of Dates Off" in desc or "Date(s) Off" in desc): return "Days Off"
         if "Consecutive Working Days" in desc or "Consecutive Days Off" in desc: return "Work Pattern"
         return "Other"
- 
+
     df_clean = df_clean.copy()
     df_clean["request_category"] = df_clean["Description"].apply(categorize_request)
- 
+
     # Relative allocation
     df_clean["relative_allocation"] = (
         df_clean["status_count"] / df_clean["Maxroster Times Granted"]
     ).replace([np.inf, -np.inf], np.nan)
- 
+
     # Maxroster Points numeric
     df_clean["Maxroster Points"] = pd.to_numeric(df_clean["Maxroster Points"], errors="coerce")
- 
+
     return df_clean
- 
+
 df_clean = process(df_raw)
 PERIOD_START = pd.Timestamp(period_start)
 PERIOD_END   = pd.Timestamp(period_end)
- 
+
 # ─────────────────────────────────────────────
 # SUMMARY METRICS
 # ─────────────────────────────────────────────
@@ -138,16 +137,16 @@ bo_n  = (df_clean["ac_type"] == "BO").sum()
 grant = (df_clean["Status"].str.contains("Granted", na=False) &
          ~df_clean["Status"].str.contains("Not Granted", na=False)).sum()
 gr_pct = round(100 * grant / tot, 1) if tot else 0
- 
+
 c1, c2, c3, c4, c5 = st.columns(5)
 c1.metric("Total bids",  f"{tot:,}")
 c2.metric("Airbus bids", f"{ab_n:,}")
 c3.metric("Boeing bids", f"{bo_n:,}")
 c4.metric("Granted",     f"{grant:,}")
 c5.metric("Grant rate",  f"{gr_pct}%")
- 
+
 st.divider()
- 
+
 # ─────────────────────────────────────────────
 # TABS
 # ─────────────────────────────────────────────
@@ -158,15 +157,15 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "📅 Days off",
     "🎯 Bid scores"
 ])
- 
+
 # ══════════════════════════════════════════════
 # TAB 1 — REQUEST CATEGORIES
 # ══════════════════════════════════════════════
 with tab1:
     st.subheader("Distribution of request categories")
- 
+
     col1, col2 = st.columns(2)
- 
+
     with col1:
         rc = df_clean["request_category"].value_counts(normalize=True).reset_index()
         rc.columns = ["request_category", "percentage"]
@@ -177,7 +176,7 @@ with tab1:
         fig.update_layout(template="simple_white", yaxis_range=[0, 55],
                           xaxis_title="Category", yaxis_title="% of bids")
         st.plotly_chart(fig, use_container_width=True)
- 
+
     with col2:
         rc_fleet = (df_clean.groupby(["ac_type", "request_category"])
                     .size().reset_index(name="count"))
@@ -192,7 +191,7 @@ with tab1:
                            legend_title_text="Fleet",
                            xaxis_title="Category", yaxis_title="% within fleet")
         st.plotly_chart(fig2, use_container_width=True)
- 
+
     # Priority allocation
     st.subheader("Average priority allocation of points per category")
     df_pts = df_clean.copy()
@@ -211,15 +210,15 @@ with tab1:
     fig3.update_layout(template="simple_white", yaxis_range=[0, 80],
                        xaxis_title="Category", yaxis_title="%")
     st.plotly_chart(fig3, use_container_width=True)
- 
+
 # ══════════════════════════════════════════════
 # TAB 2 — RELATIVE ALLOCATION
 # ══════════════════════════════════════════════
 with tab2:
     st.subheader("Mean relative allocation per request category")
- 
+
     col1, col2 = st.columns(2)
- 
+
     with col1:
         ov = df_clean.groupby("request_category")["relative_allocation"].mean().reset_index()
         ov["pct"] = ov["relative_allocation"] * 100
@@ -228,7 +227,7 @@ with tab2:
         fig.update_layout(template="simple_white", yaxis_range=[0, 110],
                           xaxis_title="Category", yaxis_title="Mean allocation (%)")
         st.plotly_chart(fig, use_container_width=True)
- 
+
     with col2:
         fl = df_clean.groupby(["ac_type", "request_category"])["relative_allocation"].mean().reset_index()
         fl["pct"] = fl["relative_allocation"] * 100
@@ -241,15 +240,15 @@ with tab2:
                            legend_title_text="Fleet",
                            xaxis_title="Category", yaxis_title="Mean allocation (%)")
         st.plotly_chart(fig2, use_container_width=True)
- 
+
 # ══════════════════════════════════════════════
 # TAB 3 — TIME PREFERENCES
 # ══════════════════════════════════════════════
 with tab3:
     st.subheader("Time preference analysis")
- 
+
     time_pref = df_clean[df_clean["request_category"] == "Time Preference"].copy()
- 
+
     def classify_bid_type(desc):
         desc = str(desc)
         if "Check In Before"   in desc: return "Check In Before"
@@ -258,11 +257,11 @@ with tab3:
         if "Check Out After"   in desc: return "Check Out After"
         if "Check Out between" in desc: return "Check Out Between"
         return "Other"
- 
+
     time_pref["bid_type"] = time_pref["Description"].apply(classify_bid_type)
- 
+
     col1, col2 = st.columns(2)
- 
+
     with col1:
         bt = time_pref["bid_type"].value_counts().reset_index()
         bt.columns = ["bid_type", "count"]
@@ -272,7 +271,7 @@ with tab3:
         fig.update_layout(template="simple_white",
                           xaxis_title="Bid type", yaxis_title="Count")
         st.plotly_chart(fig, use_container_width=True)
- 
+
     with col2:
         def norm_status(s):
             s = str(s or "")
@@ -291,31 +290,31 @@ with tab3:
                            legend_title_text="Status",
                            xaxis_title="Fleet", yaxis_title="Count")
         st.plotly_chart(fig2, use_container_width=True)
- 
+
     # CI/CO hour distribution
     st.subheader("Check-in / check-out time popularity")
- 
+
     co_between = time_pref[time_pref["bid_type"] == "Check Out Between"].copy()
- 
+
     def extract_times(text):
         times = re.findall(r'(\d{2}):(\d{2})', str(text))
         if len(times) == 2:
             return int(times[0][0]), int(times[1][0])
         return None, None
- 
+
     if not co_between.empty:
         results = co_between["Description"].apply(extract_times)
         co_between["start"] = results.apply(lambda x: x[0])
         co_between["end"]   = results.apply(lambda x: x[1])
- 
+
     def extract_hour(desc):
         m = re.search(r'(\d{2}):\d{2}', str(desc))
         return int(m.group(1)) if m else None
- 
+
     df_tp = time_pref.copy()
     df_tp["hour"] = df_tp["Description"].apply(extract_hour)
     df_main = df_tp[df_tp["bid_type"].isin(["Check In After", "Check In Before", "Check Out Before"])].copy()
- 
+
     if not co_between.empty and "end" in co_between.columns:
         co_clean = co_between.copy()
         co_clean["hour"] = co_clean["end"]
@@ -323,13 +322,13 @@ with tab3:
         df_combined = pd.concat([df_main, co_clean], ignore_index=True)
     else:
         df_combined = df_main.copy()
- 
+
     summary = df_combined.groupby(["hour", "bid_type"]).size().reset_index(name="count")
     summary["adjusted_hour"] = summary["hour"].apply(lambda x: x - 24 if x > 23 else x)
     summary["adjusted_hour"] = summary["adjusted_hour"].apply(lambda x: x + 24 if x < 5 else x)
     summary = summary.sort_values("adjusted_hour")
     bt_total = df_combined["bid_type"].value_counts()
- 
+
     fig3 = px.bar(summary, x="adjusted_hour", y="count", color="bid_type",
                   barmode="group", text="count",
                   category_orders={"bid_type": ["Check In After", "Check In Before", "Check Out Before"]},
@@ -348,26 +347,26 @@ with tab3:
                        legend_title_text="Bid type", title_x=0.5)
     fig3.for_each_trace(lambda t: t.update(name=f"{t.name} ({bt_total.get(t.name, 0)})"))
     st.plotly_chart(fig3, use_container_width=True)
- 
+
 # ══════════════════════════════════════════════
 # TAB 4 — DAYS OFF
 # ══════════════════════════════════════════════
 with tab4:
     st.subheader("Days off analysis")
- 
+
     days_off = df_clean[df_clean["request_category"] == "Days Off"].copy()
- 
+
     DOWS    = ["MON","TUE","WED","THU","FRI","SAT","SUN"]
     DOW_MAP = {d: i for i, d in enumerate(DOWS)}
- 
+
     def clamp(dates):
         return [d for d in dates if d and pd.notna(d)
                 and PERIOD_START <= pd.Timestamp(d).normalize() <= PERIOD_END]
- 
+
     def dr_incl(a, b):
         a, b = pd.Timestamp(a).normalize(), pd.Timestamp(b).normalize()
         return list(pd.date_range(min(a, b), max(a, b), freq="D"))
- 
+
     def parse_dates_field(v):
         if v is None or pd.isna(v): return []
         s = str(v).strip()
@@ -381,11 +380,11 @@ with tab4:
             return []
         d = pd.to_datetime(s, format="%d%b%Y", errors="coerce")
         return [d.normalize()] if pd.notna(d) else []
- 
+
     def wd_in_period(wd_idx):
         return [d for d in pd.date_range(PERIOD_START, PERIOD_END, freq="D")
                 if d.weekday() == wd_idx]
- 
+
     def cat_mech(t):
         t = (t or "").upper()
         if "STRING OF DATES OFF" in t: return "STRING_DATES_OFF"
@@ -393,20 +392,20 @@ with tab4:
         if "DAY(S) OF WEEK OFF"  in t: return "DOW_OFF"
         if "DATE(S) OFF"         in t: return "DATES_OFF"
         return "OTHER"
- 
+
     def extract_extra(t):
         m = re.search(r"\bextra\s+(\d+)\s+day\(s\)", t or "", re.I)
         if m: return int(m.group(1))
         m = re.search(r"\b(forward|backward)\s+(\d+)\s+extra\b", t or "", re.I)
         return int(m.group(2)) if m else None
- 
+
     def extract_wd(t):
         t = (t or "").upper()
         m = re.search(r"\bON\s+(MON|TUE|WED|THU|FRI|SAT|SUN)\b", t)
         if m: return m.group(1)
         m = re.search(r"\bFROM\s+(MON|TUE|WED|THU|FRI|SAT|SUN)\b", t)
         return m.group(1) if m else None
- 
+
     @st.cache_data(show_spinner="Exploding days off…")
     def explode_days_off(days_off_df):
         rows = []
@@ -417,7 +416,7 @@ with tab4:
             ac    = row.get("ac_type", "")
             mech  = cat_mech(text)
             out   = []
- 
+
             if mech == "DATES_OFF":
                 out = clamp(parse_dates_field(dr))
             elif mech == "STRING_DATES_OFF":
@@ -444,29 +443,29 @@ with tab4:
                         gen.extend(dr_incl(a - pd.Timedelta(days=tot-1), a)
                                    if not fwd else dr_incl(a, a + pd.Timedelta(days=tot-1)))
                     out = clamp(gen)
- 
+
             for d in sorted(set(out)):
                 rows.append({"pilot": pilot, "bid_id": bid_id, "mechanism": mech,
                              "date": pd.Timestamp(d).normalize(), "ac_type": ac})
- 
+
         ex = pd.DataFrame(rows)
         if not ex.empty:
             ex = ex.drop_duplicates(["pilot", "bid_id", "mechanism", "date", "ac_type"])
         return ex
- 
+
     with st.spinner("Running days-off analysis…"):
         exploded = explode_days_off(days_off)
- 
+
     if exploded.empty:
         st.warning("No days-off data found for this period.")
     else:
         DAY_EN = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"]
- 
+
         counts = (exploded["date"].apply(lambda d: d.weekday())
                   .value_counts().reindex(range(7), fill_value=0))
- 
+
         col1, col2 = st.columns(2)
- 
+
         with col1:
             fig = go.Figure(go.Bar(
                 x=DAY_EN, y=counts.values,
@@ -480,7 +479,7 @@ with tab4:
                 yaxis=dict(range=[0, counts.max() * 1.2])
             )
             st.plotly_chart(fig, use_container_width=True)
- 
+
         with col2:
             wknd = int(counts[[4, 5, 6]].sum())
             wkdy = int(counts[[0, 1, 2, 3]].sum())
@@ -493,33 +492,33 @@ with tab4:
             fig2.update_traces(textinfo="percent", textposition="outside", textfont_size=14)
             fig2.update_layout(title_x=0.5)
             st.plotly_chart(fig2, use_container_width=True)
- 
+
         # Overlap & redundant
         st.subheader("Overlap and redundant bids")
- 
+
         per_day = (exploded.groupby(["pilot", "date", "ac_type"])
                    .agg(bids=("bid_id", "nunique"), mechanisms=("mechanism", "nunique"))
                    .reset_index())
- 
+
         per_day_overlap = per_day[per_day["bids"] >= 2].copy()
         per_day_overlap["weekday"]   = per_day_overlap["date"].dt.day_name()
         per_day_overlap["extra_bids"] = per_day_overlap["bids"] - 1
- 
+
         overlap_wd   = per_day_overlap.groupby("weekday").size().reindex(DAY_EN, fill_value=0)
         redundant_wd = per_day_overlap.groupby("weekday")["extra_bids"].sum().reindex(DAY_EN, fill_value=0)
- 
+
         per_day_all = per_day.copy()
         per_day_all["weekday"] = per_day_all["date"].dt.day_name()
         total_bids_wd = per_day_all.groupby("weekday")["bids"].sum().reindex(DAY_EN, fill_value=0)
         pct = (redundant_wd / total_bids_wd * 100).round(1).fillna(0)
- 
+
         ov_df = pd.DataFrame({
             "weekday":   DAY_EN,
             "overlap":   overlap_wd.values,
             "redundant": redundant_wd.values,
             "pct":       pct.values
         })
- 
+
         fig3 = go.Figure()
         fig3.add_bar(x=ov_df["weekday"], y=ov_df["overlap"],
                      name="Overlap (≥2 bids)", marker_color="#1F2A8A",
@@ -545,21 +544,21 @@ with tab4:
             bargap=0.2
         )
         st.plotly_chart(fig3, use_container_width=True)
- 
+
 # ══════════════════════════════════════════════
 # TAB 5 — BID SCORES
 # ══════════════════════════════════════════════
 with tab5:
     st.subheader("Bid scores")
- 
+
     df_scores = df_clean[df_clean["Description"].str.startswith("points:", na=False)][
         ["Code", "ac_type", "score"]].copy()
     df_scores = df_scores[df_scores["score"].notna()]
- 
+
     met    = df_scores.groupby("ac_type")["score"].mean().round(1)
     zonder = df_scores[~df_scores["Code"].isin(sick_crew)].groupby("ac_type")["score"].mean().round(1)
     diff   = (zonder - met).round(1)
- 
+
     st.markdown("**Effect of excluding inactive/sick crew on mean bid score:**")
     score_df = pd.DataFrame({
         "Fleet":             met.index,
@@ -568,7 +567,7 @@ with tab5:
         "Difference":        diff.values
     })
     st.dataframe(score_df, use_container_width=True, hide_index=True)
- 
+
     fig = px.histogram(df_scores, x="score", color="ac_type",
                        barmode="overlay", nbins=20,
                        color_discrete_sequence=["#110C8A", "#02CC78"],
